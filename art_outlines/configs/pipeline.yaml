@@ -1,0 +1,51 @@
+version: 0.1
+
+paths:
+  data_dir: art_outlines/data
+  images_dir: art_outlines/data/images
+  cache_dir: art_outlines/cache
+  outlines_dir: art_outlines/cache/outlines
+  eval_dir: art_outlines/eval
+  presets_file: art_outlines/configs/presets.yaml
+  stylespec_file: art_outlines/configs/stylespec_v0.1.md
+
+preprocess:
+  resize_long_edge: 512
+  normalize: true
+  save_thumbnails: true
+
+teacher:
+  engine: controlskt  # controlskt | swiftsketch (when available)
+  preset_default: 32
+  jobs: 2
+  log_success: true
+  log_failures: true
+
+student:
+  enable: true
+  img_size: 512
+  k_list: [8, 16, 32, 64]
+  losses:
+    shape: true
+    rendering: true
+    style_distribution: true
+    constraints: true
+  curriculum:
+    stage1_fixed_k: 32
+    stage2_multi_k: true
+    hard_case_mining: true
+
+fallback:
+  enable: true
+  rdp_simplify: true
+  enforce_closed_paths: true
+  min_path_length: 4.0
+
+serve:
+  host: 0.0.0.0
+  port: 8000
+  cache_key:
+    fields: [art_id, preset, tier, model_ver, params_hash]
+  priority: [TIERA, STUDENT, FALLBACK]
+
+

@@ -1,0 +1,63 @@
+presets:
+  # K: number of strokes target for each difficulty preset
+  easy:
+    k: 8
+    postprocess:
+      rdp_simplify: true
+      smooth: true
+      enforce_closed_paths: true
+      min_path_length: 6.0
+      remove_short_paths: true
+      merge_nearby_paths: true
+    style:
+      line_width:
+        silhouette_px: [2.5, 3.0]
+        interior_px: [1.5, 2.0]
+  standard:
+    k: 16
+    postprocess:
+      rdp_simplify: true
+      smooth: true
+      enforce_closed_paths: true
+      min_path_length: 5.0
+      remove_short_paths: true
+      merge_nearby_paths: true
+    style:
+      line_width:
+        silhouette_px: [2.5, 3.0]
+        interior_px: [1.5, 2.0]
+  detailed:
+    k: 32
+    postprocess:
+      rdp_simplify: true
+      smooth: true
+      enforce_closed_paths: true
+      min_path_length: 4.0
+      remove_short_paths: true
+      merge_nearby_paths: true
+    style:
+      line_width:
+        silhouette_px: [2.5, 3.0]
+        interior_px: [1.5, 2.0]
+  extra_detailed:
+    k: 64
+    postprocess:
+      rdp_simplify: true
+      smooth: true
+      enforce_closed_paths: true
+      min_path_length: 3.0
+      remove_short_paths: true
+      merge_nearby_paths: true
+    style:
+      line_width:
+        silhouette_px: [2.5, 3.0]
+        interior_px: [1.5, 2.0]
+
+# mapping from UI slider (8/16/32/64) to internal keys
+ui_map:
+  8: easy
+  16: standard
+  32: detailed
+  64: extra_detailed
+
+
