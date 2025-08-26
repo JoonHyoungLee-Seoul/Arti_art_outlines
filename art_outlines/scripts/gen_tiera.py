@@ -200,6 +200,34 @@ def generate_thumbnail(png_path: Path, thumb_path: Path, size: int = 256) -> Non
         print(f"WARN: thumbnail failed for {png_path}: {exc}", file=sys.stderr)
 
 
+def cleanup_controlskt_intermediates(run_dir: Path) -> None:
+    """Remove unnecessary intermediate files from ControlSketch run to save space.
+    
+    Keeps only the essential outputs: final_svg.svg and final_sketch.png
+    Removes space-intensive intermediate files like svg_logs/, svg_to_png/, config.npy
+    """
+    try:
+        for root, dirs, files in os.walk(run_dir):
+            root_path = Path(root)
+            
+            # Remove large intermediate directories
+            for dir_name in ["svg_logs", "svg_to_png", "jpg_logs"]:
+                dir_path = root_path / dir_name
+                if dir_path.exists():
+                    shutil.rmtree(dir_path)
+            
+            # Remove large config files and other intermediates
+            for file_name in files:
+                file_path = root_path / file_name
+                if file_name in ["config.npy", "sketch.mp4", "depth_condition.png", 
+                               "initial_points.jpg", "input.png", "mask.png"]:
+                    if file_path.exists():
+                        file_path.unlink()
+    except Exception as exc:
+        # Non-fatal: cleanup failure should not abort the pipeline
+        print(f"WARN: cleanup failed for {run_dir}: {exc}", file=sys.stderr)
+
+
 # -------------------------------------------------------------
 # ControlSketch integration
 # -------------------------------------------------------------
@@ -251,6 +279,11 @@ def build_controlskt_cmd(
     script = controlskt_root / "ControlSketch" / "object_sketching.py"
     if not script.exists():
         raise FileNotFoundError(f"ControlSketch script not found at {script}")
+    
+    # Optimize: Set large save_interval to minimize intermediate file generation
+    # This dramatically reduces disk I/O and processing time
+    optimized_save_interval = save_interval if save_interval is not None else 10000
+    
     cmd = [
         sys.executable,
         str(script),
@@ -268,14 +301,16 @@ def build_controlskt_cmd(
         str(render_size),
         "--output_svg_size",
         str(output_svg_size),
+        "--use_init_method",
+        "1",  # Use attention-based initialization (we patched the IndexError)
+        "--save_interval",
+        str(optimized_save_interval),  # Reduce intermediate file generation
     ]
     if caption:
         cmd += ["--caption", caption]
     # Optionally pass fewer iterations for quick smoke tests
     if num_iter is not None:
         cmd += ["--num_iter", str(num_iter)]
-    if save_interval is not None:
-        cmd += ["--save_interval", str(save_interval)]
     return cmd
 
 
@@ -313,6 +348,7 @@ def process_one(
     timeout_sec: Optional[int],
     cs_num_iter: Optional[int],
     cs_save_interval: Optional[int],
+    keep_intermediates: bool,
 ) -> Tuple[str, bool, Optional[str]]:
     """Process a single CSV row and produce Tier‑A outputs.
 
@@ -456,6 +492,11 @@ def process_one(
 
     # Create a small thumbnail
     generate_thumbnail(final_png, tier_dir / "thumb_256.png", size=256)
+    
+    # Optimize: Clean up intermediate files to save space and reduce I/O overhead
+    # (unless user explicitly wants to keep them for debugging)
+    if not keep_intermediates:
+        cleanup_controlskt_intermediates(run_dir)
 
     # Log success
     write_jsonl(
@@ -488,7 +529,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         type=str,
         required=False,
-        default="art_outlines/data/images",
+        default="art_outlines/data/Simple_images",
         help="Directory containing input images (id.ext)",
     )
     p.add_argument(
@@ -570,6 +611,11 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Override ControlSketch --save_interval (0=default)",
     )
+    p.add_argument(
+        "--keep_intermediates",
+        action="store_true",
+        help="Keep intermediate ControlSketch files for debugging (increases disk usage)",
+    )
     return p.parse_args()
 
 
@@ -620,6 +666,7 @@ def main() -> int:
             timeout_sec=(args.timeout or None),
             cs_num_iter=(args.controlskt_num_iter or None),
             cs_save_interval=(args.controlskt_save_interval or None),
+            keep_intermediates=args.keep_intermediates,
         )
 
     # Execute with basic parallelism
