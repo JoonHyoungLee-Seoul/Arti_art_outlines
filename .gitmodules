@@ -1,3 +1,7 @@
 [submodule "swiftsketch"]
 	path = swiftsketch
 	url = https://github.com/JoonHyoungLee-Seoul/swiftsketch.git
+[submodule "DexiNed"]
+	path = DexiNed
+	url = https://github.com/xavysp/DexiNed.git
+	branch = main
