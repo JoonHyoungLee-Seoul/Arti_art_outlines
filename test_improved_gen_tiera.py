@@ -28,6 +28,7 @@ def test_improved_gen_tiera():
         "--jobs", "1",
         "--high_quality_mode",  # Enable high-quality mode
         "--keep_intermediates",  # Keep intermediate files for inspection
+        "--verbose",  # Enable verbose output with progress bars
         "--controlskt_save_interval", "100",  # Use high-quality save interval
     ]
     

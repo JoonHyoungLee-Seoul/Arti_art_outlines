@@ -51,6 +51,13 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple, List
 
 try:
+    from tqdm.auto import tqdm
+except ImportError:
+    # Fallback if tqdm is not available
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+
+try:
     import yaml  # PyYAML for reading pipeline/presets
 except Exception as exc:  # pragma: no cover
     print(
@@ -479,6 +486,7 @@ def process_one(
     object_name_column: Optional[str],
     caption_column: Optional[str],
     high_quality_mode: bool = False,
+    verbose: bool = False,
     images_dir: Optional[Path] = None,
 ) -> Tuple[str, bool, Optional[str]]:
     """Process a single CSV row and produce Tier‑A outputs.
@@ -593,7 +601,21 @@ def process_one(
         object_size_ratio=0.8,  # Better object sizing for museum artwork
     )
 
+    # Record start time for processing
+    start_time = time.time()
+    if verbose:
+        print(f"🎨 Processing {art_id} with {k_value} strokes...")
+        if caption:
+            print(f"   Caption: {caption}")
+        if object_name:
+            print(f"   Object: {object_name}")
+    
     rc, out = run_controlskt(cmd, timeout_sec=timeout_sec)
+    
+    # Calculate and display processing time
+    processing_time = time.time() - start_time
+    if verbose:
+        print(f"⏱️  Completed {art_id} in {processing_time:.1f}s (return code: {rc})")
     if rc != 0:
         # Log failure with captured output
         write_jsonl(
@@ -789,6 +811,11 @@ def parse_args() -> argparse.Namespace:
         help="Enable high-quality mode for teacher model generation (slower but better quality)",
     )
     p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose output with detailed progress information",
+    )
+    p.add_argument(
         "--object_name_column",
         type=str,
         required=False,
@@ -808,6 +835,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Program entrypoint for batch Tier‑A generation."""
     args = parse_args()
+    start_time = time.time()
 
     # Resolve repository root and core paths via pipeline.yaml
     repo_root = resolve_repo_root()
@@ -875,6 +903,7 @@ def main() -> int:
             object_name_column=(args.object_name_column or None),
             caption_column=(args.caption_column or None),
             high_quality_mode=args.high_quality_mode,
+            verbose=args.verbose,
             images_dir=images_dir,
         )
 
@@ -882,28 +911,59 @@ def main() -> int:
     total = len(rows)
     ok_count = 0
     fail_count = 0
+    
+    print(f"\n🚀 Starting batch processing of {total} images...")
+    print(f"   Preset: {args.preset} (K={k_value} strokes)")
+    print(f"   Jobs: {args.jobs}")
+    print(f"   High-quality mode: {'✅' if args.high_quality_mode else '❌'}")
+    print(f"   Keep intermediates: {'✅' if args.keep_intermediates else '❌'}")
+    print()
+    
+    # Create progress bar
+    progress_bar = tqdm(total=total, desc="Processing images", unit="img")
+    
     with ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as ex:
         futures = [ex.submit(do_row, row) for row in rows]
         for fut in as_completed(futures):
             art_id, ok, err = fut.result()
             if ok:
                 ok_count += 1
+                progress_bar.set_postfix({"✅": ok_count, "❌": fail_count})
             else:
                 fail_count += 1
+                progress_bar.set_postfix({"✅": ok_count, "❌": fail_count})
                 # Also mirror to stderr for visibility during runs
                 print(f"FAIL id={art_id} preset={args.preset}: {err}", file=sys.stderr)
+            progress_bar.update(1)
+    
+    progress_bar.close()
 
     # Summary line
+    end_time = time.time()
+    total_time = end_time - start_time
+    avg_time_per_image = total_time / total if total > 0 else 0
+    
     summary = {
         "preset": args.preset,
         "k": k_value,
         "total": total,
         "ok": ok_count,
         "fail": fail_count,
+        "total_time_seconds": total_time,
+        "avg_time_per_image": avg_time_per_image,
         "time": time.time(),
     }
     write_jsonl(logs_dir / "summary.jsonl", summary)
-    print(json.dumps(summary, ensure_ascii=False))
+    
+    # Display final summary
+    print(f"\n🎉 Batch processing completed!")
+    print(f"   Total images: {total}")
+    print(f"   ✅ Successful: {ok_count}")
+    print(f"   ❌ Failed: {fail_count}")
+    print(f"   ⏱️  Total time: {total_time:.1f}s")
+    print(f"   📊 Average per image: {avg_time_per_image:.1f}s")
+    print(f"   📈 Success rate: {(ok_count/total*100):.1f}%" if total > 0 else "   📈 Success rate: 0%")
+    
     return 0 if fail_count == 0 else 2
 
 

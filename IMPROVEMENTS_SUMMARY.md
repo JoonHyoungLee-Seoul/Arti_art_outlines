@@ -40,7 +40,18 @@ This document summarizes the improvements made to `gen_tiera.py` to achieve the 
   - Quality assurance file retention
 - **Impact**: Balances quality with disk usage
 
-### 6. **Bug Fixes** ✅
+### 6. **Progress Bars and Timing** ✅
+- **Added**: `tqdm` progress bars for batch processing
+- **Added**: Individual image processing time display
+- **Added**: `--verbose` mode for detailed output
+- **Features**:
+  - Real-time progress bar with success/failure counts
+  - Per-image processing time and status
+  - Batch summary with timing statistics
+  - Configurable verbosity level
+- **Impact**: Same user experience as direct ControlSketch approach
+
+### 7. **Bug Fixes** ✅
 - **Status**: IndexError in attention-based initialization was already fixed in the current version
 - **Fix Details**: Added bounds check `if self.strokes_counter < len(self.inds_normalised)` before accessing array
 - **Impact**: Prevents crashes and improves initialization quality
@@ -86,7 +97,22 @@ python art_outlines/scripts/gen_tiera.py \
   --caption_column caption \
   --jobs 1 \
   --high_quality_mode \
-  --keep_intermediates
+  --keep_intermediates \
+  --verbose
+```
+
+### Quick Test Mode (with progress bars)
+```bash
+python art_outlines/scripts/gen_tiera.py \
+  --input enhanced_art_pipeline/data/Clipped_images \
+  --meta enhanced_art_pipeline/data/split_csvs/meta.normalized.200_1.csv \
+  --out art_outlines/cache/outlines \
+  --preset 32 \
+  --object_name_column object_name \
+  --caption_column caption \
+  --jobs 1 \
+  --high_quality_mode \
+  --verbose
 ```
 
 ## Quality Levels Comparison
