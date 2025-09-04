@@ -1,0 +1,15 @@
+# Enhanced Art Pipeline Dependencies
+# Core ML libraries
+torch>=2.0.0
+transformers>=4.20.0
+pillow>=9.0.0
+
+# Data processing
+pandas>=1.3.0
+numpy>=1.20.0
+
+# NLP for object extraction
+nltk>=3.8.0
+
+# Optional: for better performance
+accelerate>=0.20.0

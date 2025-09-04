@@ -2,4 +2,7 @@ mcp.json
 .env
 *.env
 .env.*
-image_clipping/models/*.onnx
+./image_clipping/models/*.onnx
+./Arti_art_outlines_backup
+./enhanced_art_pipeline/data/Clipped_images
+./Arti_art_outlines_backup

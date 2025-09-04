@@ -12,6 +12,7 @@ Key responsibilities:
 3) Invoke ControlSketch's object_sketching.py as a subprocess with correct args.
 4) Normalize outputs into cache/outlines/{id}/{preset}/TIERA/*.svg|.png
 5) Generate thumbnails, write JSONL logs, support resume/dry‑run, and parallel jobs.
+6) Extract object_name and caption from CSV columns and pass to ControlSketch.
 
 Usage example (from README_Student.md):
   env ART_ROOT=. \
@@ -21,13 +22,17 @@ Usage example (from README_Student.md):
     --out art_outlines/cache/outlines \
     --preset 32 \
     --engine controlskt \
-    --jobs 4
+    --jobs 4 \
+    --object_name_column title \
+    --caption_column notes
 
 Notes:
 - This script assumes ControlSketch is available under the swiftsketch repo
   cloned alongside this project, or otherwise available on disk. Set
   --controlskt_root if it's in a non‑standard location.
 - We only implement the 'controlskt' engine for now; 'swiftsketch' is a TODO.
+- Use --object_name_column and --caption_column to specify which CSV columns
+  should be used as object_name and caption parameters for ControlSketch.
 """
 
 from __future__ import annotations
@@ -200,6 +205,120 @@ def generate_thumbnail(png_path: Path, thumb_path: Path, size: int = 256) -> Non
         print(f"WARN: thumbnail failed for {png_path}: {exc}", file=sys.stderr)
 
 
+def validate_image_quality(image_path: Path) -> Tuple[bool, str]:
+    """Validate image quality for sketching.
+    
+    Returns (is_valid, reason) where is_valid indicates if the image
+    is suitable for high-quality sketching.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+        
+        with Image.open(image_path) as img:
+            # Check image dimensions
+            width, height = img.size
+            if width < 256 or height < 256:
+                return False, f"Image too small: {width}x{height}"
+            
+            # Check if image is too large (may cause memory issues)
+            if width > 4096 or height > 4096:
+                return False, f"Image too large: {width}x{height}"
+            
+            # Check aspect ratio (avoid extremely wide/tall images)
+            aspect_ratio = max(width, height) / min(width, height)
+            if aspect_ratio > 4.0:
+                return False, f"Extreme aspect ratio: {aspect_ratio:.2f}"
+            
+            # Convert to RGB if needed
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Check for sufficient contrast
+            img_array = np.array(img)
+            gray = np.mean(img_array, axis=2)
+            contrast = np.std(gray)
+            if contrast < 20:  # Low contrast threshold
+                return False, f"Low contrast: {contrast:.2f}"
+            
+            return True, "Valid"
+            
+    except Exception as e:
+        return False, f"Error reading image: {str(e)}"
+
+
+def enhance_caption_for_sketching(caption: str, object_name: str) -> Tuple[str, str]:
+    """Enhance caption and object name for better sketching guidance.
+    
+    This function improves the quality of captions and object names to provide
+    better guidance for the attention mechanism in ControlSketch.
+    """
+    if not caption:
+        return "", object_name
+    
+    # Clean up the caption - remove museum-specific language
+    enhanced_caption = caption.lower()
+    
+    # Remove common museum description prefixes
+    prefixes_to_remove = [
+        "a painting of", "painting of", "a drawing of", "drawing of",
+        "a sketch of", "sketch of", "a portrait of", "portrait of",
+        "a sculpture of", "sculpture of", "a work of art", "work of art"
+    ]
+    
+    for prefix in prefixes_to_remove:
+        if enhanced_caption.startswith(prefix):
+            enhanced_caption = enhanced_caption[len(prefix):].strip()
+            break
+    
+    # Enhance object name if it's too generic
+    enhanced_object_name = object_name.lower().strip()
+    
+    # If object name is too generic, try to extract from caption
+    generic_names = ["person", "people", "man", "woman", "figure", "object", "item"]
+    if enhanced_object_name in generic_names or not enhanced_object_name:
+        # Try to extract more specific object names from caption
+        words = enhanced_caption.split()
+        for word in words:
+            if word not in ["a", "an", "the", "and", "or", "with", "in", "on", "at", "by"]:
+                if len(word) > 3:  # Avoid very short words
+                    enhanced_object_name = word
+                    break
+    
+    # Ensure caption is descriptive but concise
+    if len(enhanced_caption) > 100:
+        enhanced_caption = enhanced_caption[:100] + "..."
+    
+    return enhanced_caption, enhanced_object_name
+
+
+def cleanup_controlskt_intermediates_selective(run_dir: Path) -> None:
+    """Selective cleanup for high-quality mode - keeps essential files but removes very large ones.
+    
+    Keeps important intermediate files for quality assurance while removing
+    space-intensive files that don't affect quality.
+    """
+    try:
+        for root, dirs, files in os.walk(run_dir):
+            root_path = Path(root)
+            
+            # Remove only the largest intermediate directories
+            for dir_name in ["svg_to_png"]:  # Keep svg_logs for quality checking
+                dir_path = root_path / dir_name
+                if dir_path.exists():
+                    shutil.rmtree(dir_path)
+            
+            # Remove only the largest files
+            for file_name in files:
+                file_path = root_path / file_name
+                if file_name in ["sketch.mp4", "config.npy"]:  # Keep other files
+                    if file_path.exists():
+                        file_path.unlink()
+    except Exception as exc:
+        # Non-fatal: cleanup failure should not abort the pipeline
+        print(f"WARN: selective cleanup failed for {run_dir}: {exc}", file=sys.stderr)
+
+
 def cleanup_controlskt_intermediates(run_dir: Path) -> None:
     """Remove unnecessary intermediate files from ControlSketch run to save space.
     
@@ -268,8 +387,10 @@ def build_controlskt_cmd(
     render_size: int = 512,
     output_svg_size: int = 512,
     caption: str = "",
+    object_name: str = "",
     num_iter: Optional[int] = None,
     save_interval: Optional[int] = None,
+    object_size_ratio: float = 0.8,  # Increased from default 0.75 for better detail
 ) -> List[str]:
     """Construct the subprocess command to invoke ControlSketch.
 
@@ -280,9 +401,9 @@ def build_controlskt_cmd(
     if not script.exists():
         raise FileNotFoundError(f"ControlSketch script not found at {script}")
     
-    # Optimize: Set large save_interval to minimize intermediate file generation
-    # This dramatically reduces disk I/O and processing time
-    optimized_save_interval = save_interval if save_interval is not None else 10000
+    # Use default save_interval for high-quality teacher model generation
+    # This ensures proper intermediate saves for quality optimization
+    optimized_save_interval = save_interval if save_interval is not None else 100
     
     cmd = [
         sys.executable,
@@ -301,13 +422,19 @@ def build_controlskt_cmd(
         str(render_size),
         "--output_svg_size",
         str(output_svg_size),
+        "--object_size_ratio",
+        str(object_size_ratio),  # Better object sizing for museum artwork
         "--use_init_method",
-        "1",  # Use attention-based initialization (we patched the IndexError)
+        "1",  # Use attention-based initialization
         "--save_interval",
-        str(optimized_save_interval),  # Reduce intermediate file generation
+        str(optimized_save_interval),  # High-quality intermediate saves
+        "--sort_final_sketch",
+        "1",  # Sort strokes for better final output
     ]
     if caption:
         cmd += ["--caption", caption]
+    if object_name:
+        cmd += ["--object_name", object_name]
     # Optionally pass fewer iterations for quick smoke tests
     if num_iter is not None:
         cmd += ["--num_iter", str(num_iter)]
@@ -349,6 +476,10 @@ def process_one(
     cs_num_iter: Optional[int],
     cs_save_interval: Optional[int],
     keep_intermediates: bool,
+    object_name_column: Optional[str],
+    caption_column: Optional[str],
+    high_quality_mode: bool = False,
+    images_dir: Optional[Path] = None,
 ) -> Tuple[str, bool, Optional[str]]:
     """Process a single CSV row and produce Tier‑A outputs.
 
@@ -380,7 +511,9 @@ def process_one(
         return art_id, True, None
 
     # Locate input target: image preferred, fallback to SDXL dict if provided
-    target_path = find_image_for_id(paths.images_dir, art_id)
+    # Use CLI override if provided, otherwise use pipeline config
+    search_dir = images_dir if images_dir is not None else paths.images_dir
+    target_path = find_image_for_id(search_dir, art_id)
     used_target_type = "image"
     if target_path is None and sdxl_dir:
         target_path = find_sdxl_dict_for_id(sdxl_dir, art_id)
@@ -398,6 +531,22 @@ def process_one(
             },
         )
         return art_id, False, "missing_input"
+    
+    # Validate image quality for high-quality teacher model generation
+    is_valid, reason = validate_image_quality(target_path)
+    if not is_valid:
+        write_jsonl(
+            logs_dir / "failures.jsonl",
+            {
+                "id": art_id,
+                "preset": preset_value,
+                "k": k_value,
+                "status": "poor_image_quality",
+                "reason": reason,
+                "time": time.time(),
+            },
+        )
+        return art_id, False, f"poor_image_quality: {reason}"
 
     if dry_run:
         write_jsonl(
@@ -413,6 +562,17 @@ def process_one(
         )
         return art_id, True, None
 
+    # Extract object_name and caption from CSV row if columns are specified
+    object_name = ""
+    caption = ""
+    if object_name_column and object_name_column in row:
+        object_name = (row.get(object_name_column) or "").strip()
+    if caption_column and caption_column in row:
+        caption = (row.get(caption_column) or "").strip()
+    
+    # Enhance caption and object name for better sketching guidance
+    caption, object_name = enhance_caption_for_sketching(caption, object_name)
+    
     # Invoke ControlSketch into a temp run directory under our tier_dir
     # We let ControlSketch create nested structure, then copy normalized outputs.
     run_dir = tier_dir / "_controlskt_run"
@@ -426,9 +586,11 @@ def process_one(
         fix_scale=True,
         render_size=512,
         output_svg_size=512,
-        caption="",
+        caption=caption,
+        object_name=object_name,
         num_iter=cs_num_iter,
         save_interval=cs_save_interval,
+        object_size_ratio=0.8,  # Better object sizing for museum artwork
     )
 
     rc, out = run_controlskt(cmd, timeout_sec=timeout_sec)
@@ -493,10 +655,13 @@ def process_one(
     # Create a small thumbnail
     generate_thumbnail(final_png, tier_dir / "thumb_256.png", size=256)
     
-    # Optimize: Clean up intermediate files to save space and reduce I/O overhead
-    # (unless user explicitly wants to keep them for debugging)
-    if not keep_intermediates:
+    # Clean up intermediate files to save space and reduce I/O overhead
+    # In high-quality mode, keep more files for better debugging and quality assurance
+    if not keep_intermediates and not high_quality_mode:
         cleanup_controlskt_intermediates(run_dir)
+    elif high_quality_mode:
+        # In high-quality mode, keep essential intermediate files but remove very large ones
+        cleanup_controlskt_intermediates_selective(run_dir)
 
     # Log success
     write_jsonl(
@@ -507,6 +672,8 @@ def process_one(
             "k": k_value,
             "status": "ok",
             "target_type": used_target_type,
+            "object_name": object_name,
+            "caption": caption,
             "svg": str(final_svg.relative_to(paths.repo_root)),
             "png": str(final_png.relative_to(paths.repo_root)),
             "time": time.time(),
@@ -530,7 +697,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         required=False,
         default="art_outlines/data/Simple_images",
-        help="Directory containing input images (id.ext)",
+        help="Directory containing input images (id.ext) or single image file",
     )
     p.add_argument(
         "--meta",
@@ -616,6 +783,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keep intermediate ControlSketch files for debugging (increases disk usage)",
     )
+    p.add_argument(
+        "--high_quality_mode",
+        action="store_true",
+        help="Enable high-quality mode for teacher model generation (slower but better quality)",
+    )
+    p.add_argument(
+        "--object_name_column",
+        type=str,
+        required=False,
+        default="",
+        help="CSV column name to use as object_name for ControlSketch (e.g., 'title', 'tags')",
+    )
+    p.add_argument(
+        "--caption_column",
+        type=str,
+        required=False,
+        default="",
+        help="CSV column name to use as caption for ControlSketch (e.g., 'notes', 'title')",
+    )
     return p.parse_args()
 
 
@@ -632,7 +818,20 @@ def main() -> int:
     preset_key, k_value = load_presets_k(paths.presets_file, args.preset)
 
     # Inputs/outputs (allow overrides via CLI)
-    images_dir = (repo_root / args.input).resolve()
+    input_path = (repo_root / args.input).resolve()
+    
+    # Handle both directory and single file inputs
+    if input_path.is_file():
+        # If input is a single file, use its parent directory and extract the art_id from filename
+        images_dir = input_path.parent
+        single_file_mode = True
+        single_file_path = input_path
+    else:
+        # If input is a directory, use it as the images directory
+        images_dir = input_path
+        single_file_mode = False
+        single_file_path = None
+    
     meta_csv = (repo_root / args.meta).resolve()
     out_root = (repo_root / args.out).resolve()
     controlskt_root = (repo_root / args.controlskt_root).resolve()
@@ -645,9 +844,15 @@ def main() -> int:
     ensure_dir(logs_dir)
 
     # Read metadata rows
-    with open(meta_csv, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+    if single_file_mode:
+        # For single file mode, create a single row with the art_id from filename
+        art_id = single_file_path.stem  # Extract filename without extension
+        rows = [{"id": art_id}]  # Create a minimal row with just the ID
+    else:
+        # Normal mode: read from CSV
+        with open(meta_csv, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
 
     # Worker wrapper for executor
     def do_row(row: Dict[str, str]):
@@ -667,6 +872,10 @@ def main() -> int:
             cs_num_iter=(args.controlskt_num_iter or None),
             cs_save_interval=(args.controlskt_save_interval or None),
             keep_intermediates=args.keep_intermediates,
+            object_name_column=(args.object_name_column or None),
+            caption_column=(args.caption_column or None),
+            high_quality_mode=args.high_quality_mode,
+            images_dir=images_dir,
         )
 
     # Execute with basic parallelism
