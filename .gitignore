@@ -4,3 +4,9 @@ mcp.json
 image_clipping/models/*.onnx
 Arti_art_outlines_backup/
 enhanced_art_pipeline/data/Clipped_images/
+art_outlines/cache/outlines/
+image_clipping/models/*.onnx
+DexiNed/checkpoints/
+*.env
+.env.*
+mcp.json*Miniconda3-latest-Linux-*.sh
