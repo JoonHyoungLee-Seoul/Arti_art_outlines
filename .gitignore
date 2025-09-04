@@ -10,3 +10,9 @@ DexiNed/checkpoints/
 *.env
 .env.*
 mcp.json*Miniconda3-latest-Linux-*.sh
+image_clipping/models/*.onnx
+DexiNed/checkpoints/
+*.env
+.env.*
+mcp.json
+*Miniconda3-latest-Linux-*.sh
